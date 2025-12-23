@@ -103,6 +103,13 @@ def main(n_iter=30, test_size=0.2, random_state=42, data_path=None, out_dir="art
     try_init_dagshub()
 
     if data_path:
+        # if path not found relative to current cwd, try relative to this script's folder
+        if not os.path.exists(data_path):
+            alt = os.path.join(os.path.dirname(__file__), data_path)
+            if os.path.exists(alt):
+                data_path = alt
+            else:
+                raise FileNotFoundError(f"Dataset not found: {data_path}")
         logging.info("Using dataset: %s", data_path)
     else:
         data_path = find_processed_csv()

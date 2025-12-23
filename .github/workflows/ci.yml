@@ -43,14 +43,14 @@ jobs:
           pip install mlflow scikit-learn pandas numpy joblib scipy dagshub
 
       # --------------------------------------------------
-      # 4. Retrain model (MLflow Project)
+      # 4. Retrain model (run training script directly)
       # --------------------------------------------------
-      - name: Retrain model (MLflow Project)
+      - name: Retrain model (run script)
         run: |
-          mlflow run "MLProject (folder)" \
-            --env-manager=local \
-            -P data_path=weather_preprocessing/seattle_weather_processed.csv \
-            -P out_dir=artifacts
+          python "MLProject (folder)/modeling_tuning.py" \
+            --data_path weather_preprocessing/seattle_weather_processed.csv \
+            --out_dir artifacts \
+            --n-iter 30
 
       # --------------------------------------------------
       # 5. Upload artifacts to GitHub
