@@ -8,7 +8,6 @@ import numpy as np
 import pandas as pd
 import argparse
 import sys
-from contextlib import nullcontext
 
 import mlflow
 import mlflow.sklearn
@@ -28,40 +27,32 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, f1_score, classification_report
 from scipy.stats import randint, uniform
 
-# -------------------------------------------------------------------
+# --------------------------------------------------
 # LOGGING
-# -------------------------------------------------------------------
+# --------------------------------------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 
-# -------------------------------------------------------------------
-# DAGSHUB + MLFLOW INIT (OPTIONAL)
-# -------------------------------------------------------------------
+# --------------------------------------------------
+# DAGSHUB INIT (OPTIONAL, NON-FATAL)
+# --------------------------------------------------
 def try_init_dagshub(repo_owner="Irfanzr7", repo_name="MSML_IRFAN-ZIYADI-RIZKILLAH"):
-    """
-    Non-fatal: Kalau token / dagshub tidak ada (misal di GitHub Actions),
-    training tetap jalan pakai local tracking.
-    """
     if dagshub is None:
-        logging.info("dagshub not installed; skipping DagsHub init")
-        return False
-
+        logging.info("dagshub not installed; skipping")
+        return
     if not os.getenv("DAGSHUB_USER_TOKEN"):
-        logging.warning("DAGSHUB_USER_TOKEN not found; skipping DagsHub init")
-        return False
-
+        logging.info("DAGSHUB_USER_TOKEN not found; skipping")
+        return
     try:
         dagshub.init(repo_owner=repo_owner, repo_name=repo_name, mlflow=True)
-        logging.info("Initialized DagsHub for %s/%s", repo_owner, repo_name)
-        return True
+        logging.info("DagsHub initialized")
     except Exception as e:
-        logging.warning("Failed to init DagsHub: %s", e)
-        return False
+        logging.warning("DagsHub init failed: %s", e)
 
 
-# -------------------------------------------------------------------
-# HELPER FUNCTIONS
-# -------------------------------------------------------------------
+# --------------------------------------------------
+# DATA HELPERS
+# --------------------------------------------------
 def find_processed_csv():
     candidates = [
         os.path.join("weather_preprocessing", "seattle_weather_processed.csv"),
@@ -73,13 +64,12 @@ def find_processed_csv():
 
     matches = glob.glob("**/*processed*.csv", recursive=True)
     if matches:
-        logging.info("Found processed csv: %s", matches[0])
         return matches[0]
 
-    raise FileNotFoundError("Dataset hasil preprocessing tidak ditemukan")
+    raise FileNotFoundError("Processed dataset not found")
 
 
-def build_preprocessor(X: pd.DataFrame):
+def build_preprocessor(X):
     num_cols = X.select_dtypes(include=[np.number]).columns
     cat_cols = X.select_dtypes(exclude=[np.number]).columns
 
@@ -91,7 +81,6 @@ def build_preprocessor(X: pd.DataFrame):
     try:
         ohe = OneHotEncoder(handle_unknown="ignore", sparse_output=False)
     except TypeError:
-        # sklearn < 1.2 fallback
         ohe = OneHotEncoder(handle_unknown="ignore", sparse=False)
 
     cat_pipe = Pipeline([
@@ -105,28 +94,23 @@ def build_preprocessor(X: pd.DataFrame):
     ])
 
 
-# -------------------------------------------------------------------
-# MAIN TRAINING
-# -------------------------------------------------------------------
+# --------------------------------------------------
+# MAIN
+# --------------------------------------------------
 def main(n_iter=30, test_size=0.2, random_state=42, data_path=None, out_dir="artifacts"):
-    # Pastikan out_dir ada
     os.makedirs(out_dir, exist_ok=True)
 
-    # Non-fatal DagsHub init
     try_init_dagshub()
 
-    # Dataset path
     if data_path:
-        if not os.path.exists(data_path):
-            raise FileNotFoundError(f"Dataset not found: {data_path}")
         logging.info("Using dataset: %s", data_path)
     else:
         data_path = find_processed_csv()
-        logging.info("Using auto-found dataset: %s", data_path)
+        logging.info("Auto dataset: %s", data_path)
 
     df = pd.read_csv(data_path)
     if "weather" not in df.columns:
-        raise ValueError("Kolom target 'weather' tidak ditemukan")
+        raise ValueError("Target column 'weather' not found")
 
     X = df.drop(columns=["weather"])
     y = df["weather"]
@@ -164,110 +148,77 @@ def main(n_iter=30, test_size=0.2, random_state=42, data_path=None, out_dir="art
     }
 
     best_model = None
-    best_f1 = -1.0
+    best_f1 = -1
 
-    # ------------------------------------------------------------
-    # CRITICAL FIX:
-    # - Jika script dipanggil oleh `mlflow run`, sudah ada active run.
-    # - Jangan start_run lagi (menghindari error Run '<id>' not found).
-    # ------------------------------------------------------------
-    run_cm = mlflow.start_run(run_name="model_tuning") if mlflow.active_run() is None else nullcontext()
+    # 🔑 LOG KE RUN YANG SUDAH DIBUAT OLEH `mlflow run`
+    mlflow.log_param("n_iter", n_iter)
+    mlflow.log_param("test_size", test_size)
+    mlflow.log_param("random_state", random_state)
 
-    with run_cm:
-        # Log params (aman baik ada run aktif atau kita yang start)
-        mlflow.log_param("n_iter", n_iter)
-        mlflow.log_param("test_size", test_size)
-        mlflow.log_param("random_state", random_state)
-        mlflow.log_param("data_path", data_path)
+    for name, (pipe, params) in models.items():
+        logging.info("Training %s", name)
 
-        for name, (pipe, params) in models.items():
-            logging.info("Tuning model: %s", name)
+        search = RandomizedSearchCV(
+            pipe,
+            params,
+            n_iter=n_iter,
+            scoring="f1_weighted",
+            cv=cv,
+            n_jobs=-1,
+            random_state=random_state,
+            verbose=1
+        )
 
-            search = RandomizedSearchCV(
-                pipe,
-                params,
-                n_iter=n_iter,
-                scoring="f1_weighted",
-                cv=cv,
-                n_jobs=-1,
-                random_state=random_state,
-                verbose=1
-            )
+        search.fit(X_train, y_train)
 
-            search.fit(X_train, y_train)
+        y_pred = search.predict(X_test)
+        acc = accuracy_score(y_test, y_pred)
+        f1 = f1_score(y_test, y_pred, average="weighted")
 
-            y_pred = search.predict(X_test)
-            acc = accuracy_score(y_test, y_pred)
-            f1 = f1_score(y_test, y_pred, average="weighted")
+        mlflow.log_metric(f"{name}_accuracy", acc)
+        mlflow.log_metric(f"{name}_f1_weighted", f1)
 
-            # Log metrics
-            mlflow.log_metric(f"{name}_accuracy", acc)
-            mlflow.log_metric(f"{name}_f1_weighted", f1)
+        report_path = os.path.join(out_dir, f"classification_report_{name}.txt")
+        with open(report_path, "w") as f:
+            f.write(classification_report(y_test, y_pred))
 
-            # Log best params
-            try:
-                mlflow.log_dict(search.best_params_, f"{name}_best_params.json")
-            except Exception:
-                mlflow.log_param(f"{name}_best_params", json.dumps(search.best_params_))
+        model_path = os.path.join(out_dir, f"model_{name}.joblib")
+        joblib.dump(search.best_estimator_, model_path)
 
-            # Save local artifacts
-            report_path = os.path.join(out_dir, f"classification_report_{name}.txt")
-            with open(report_path, "w", encoding="utf-8") as f:
-                f.write(classification_report(y_test, y_pred))
+        mlflow.log_artifact(report_path)
+        mlflow.log_artifact(model_path)
 
-            model_path = os.path.join(out_dir, f"model_{name}.joblib")
-            joblib.dump(search.best_estimator_, model_path)
+        if f1 > best_f1:
+            best_f1 = f1
+            best_model = (name, search.best_estimator_)
 
-            # Log artifacts to mlflow
-            mlflow.log_artifact(report_path)
-            mlflow.log_artifact(model_path)
-
-            if f1 > best_f1:
-                best_f1 = f1
-                best_model = (name, search.best_estimator_)
-
-        # Save BEST MODEL
-        if best_model:
-            best_name, model = best_model
-            mlflow.log_param("best_model", best_name)
-            mlflow.log_metric("best_f1_weighted", best_f1)
-
-            # A) Log model to MLflow run artifacts
-            mlflow.sklearn.log_model(model, artifact_path="best_model")
-
-            # B) Save MLflow model locally for build-docker: artifacts/model/MLmodel
-            best_model_dir = os.path.join(out_dir, "model")
-            if os.path.exists(best_model_dir):
-                shutil.rmtree(best_model_dir)
-            mlflow.sklearn.save_model(model, path=best_model_dir)
-
-            # Sanity check
-            mlmodel_path = os.path.join(best_model_dir, "MLmodel")
-            if not os.path.exists(mlmodel_path):
-                raise RuntimeError(f"MLmodel file not found at: {mlmodel_path}")
-
-            logging.info("✅ Best model saved for docker at: %s", best_model_dir)
-        else:
-            logging.warning("No best model selected.")
-
+    # SAVE BEST MODEL FOR DOCKER
     if best_model:
-        print("Training & tuning selesai. Best model:", best_model[0])
-    else:
-        print("Training & tuning selesai. No best model selected.")
+        name, model = best_model
+        mlflow.log_param("best_model", name)
+        mlflow.log_metric("best_f1_weighted", best_f1)
+
+        best_model_dir = os.path.join(out_dir, "model")
+        if os.path.exists(best_model_dir):
+            shutil.rmtree(best_model_dir)
+
+        mlflow.sklearn.save_model(model, best_model_dir)
+
+        if not os.path.exists(os.path.join(best_model_dir, "MLmodel")):
+            raise RuntimeError("MLmodel not created")
+
+        logging.info("Best model saved to %s", best_model_dir)
 
 
-# -------------------------------------------------------------------
+# --------------------------------------------------
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train and tune models for Seattle weather dataset")
+    parser = argparse.ArgumentParser()
 
-    parser.add_argument("--n-iter", dest="n_iter", type=int, default=30,
-                        help="Number of iterations for RandomizedSearchCV")
-    parser.add_argument("--test-size", dest="test_size", type=float, default=0.2,
-                        help="Test set proportion")
-    parser.add_argument("--random-state", dest="random_state", type=int, default=42,
-                        help="Random seed")
-    parser.add_argument("--data_path", type=str, default=None, help="Path to processed dataset CSV")
-    parser.add_argument("--out_dir", type=str, default="artifacts", help="Directory to save artifacts/models")
+    parser.add_argument("--n-iter", dest="n_iter", type=int, default=30)
+    parser.add_argument("--test-size", dest="test_size", type=float, default=0.2)
+    parser.add_argument("--random-state", dest="random_state", type=int, default=42)
+    parser.add_argument("--data_path", type=str, default=None)
+    parser.add_argument("--out_dir", type=str, default="artifacts")
 
     args = parser.parse_args()
 
@@ -279,9 +230,6 @@ if __name__ == "__main__":
             data_path=args.data_path,
             out_dir=args.out_dir
         )
-    except FileNotFoundError as e:
-        logging.error(e)
-        sys.exit(2)
     except Exception as e:
-        logging.exception("Unhandled error during training: %s", e)
+        logging.exception(e)
         sys.exit(1)
