@@ -205,6 +205,11 @@ def main(n_iter=30, test_size=0.2, random_state=42, data_path=None, out_dir="art
             mlflow.log_param("best_model", name)
             mlflow.sklearn.log_model(model, artifact_path="best_model")
 
+            # Save the MLflow model locally for downstream Docker build step
+            os.makedirs(out_dir, exist_ok=True)
+            model_export_path = os.path.join(out_dir, "model")
+            mlflow.sklearn.save_model(model, model_export_path)
+
     if best_model:
         print("Training & tuning selesai. Best model:", best_model[0])
     else:
