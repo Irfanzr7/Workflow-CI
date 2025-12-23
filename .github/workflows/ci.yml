@@ -1,91 +1,32 @@
-# -------------------------------------------------------------------
-# GitHub Actions Workflow: CI for MLflow Retraining and Docker Build
-# -------------------------------------------------------------------
+#triggered: ci.yml
 
-# triggered on push to main branch or manual dispatch
-
-name: CI MLflow Retraining and Docker Build
+name: CI MLflow Project
 
 on:
   push:
-    branches: [ "main" ]
-  workflow_dispatch:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
 
 jobs:
-  retrain_build_docker:
+  train:
     runs-on: ubuntu-latest
 
-    env:
-      MLFLOW_TRACKING_URI: file:./mlruns
-      DOCKER_IMAGE: irfanzr7/weather-mlflow-model
-
     steps:
-      # --------------------------------------------------
-      # 1. Checkout
-      # --------------------------------------------------
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
-      # --------------------------------------------------
-      # 2. Python setup
-      # --------------------------------------------------
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v4
         with:
           python-version: "3.10"
 
-      # --------------------------------------------------
-      # 3. Install dependencies
-      # --------------------------------------------------
-      - name: Install MLflow and dependencies
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install mlflow scikit-learn pandas numpy joblib scipy dagshub
+          pip install -r "MLProject (folder)/requirements.txt"
+          pip install mlflow
 
-      # --------------------------------------------------
-      # 4. Retrain model (run training script directly)
-      # --------------------------------------------------
-      - name: Retrain model (run script)
+      - name: Run MLflow Project (training)
         run: |
-          python "MLProject (folder)/modeling_tuning.py" \
-            --data_path weather_preprocessing/seattle_weather_processed.csv \
-            --out_dir artifacts \
-            --n-iter 30
-
-      # --------------------------------------------------
-      # 5. Upload artifacts to GitHub
-      # --------------------------------------------------
-      - name: Upload training artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: mlflow-training-artifacts
-          path: artifacts
-
-      # --------------------------------------------------
-      # 6. Login to Docker Hub
-      # --------------------------------------------------
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      # --------------------------------------------------
-      # 7. Build Docker image with MLflow
-      # --------------------------------------------------
-      - name: Build Docker image with MLflow
-        run: |
-          echo "Checking MLflow model directory..."
-          ls -R artifacts
-
-          mlflow models build-docker \
-            --model-uri artifacts/model \
-            --name $DOCKER_IMAGE \
-            --env-manager local
-
-      # --------------------------------------------------
-      # 8. Push Docker image
-      # --------------------------------------------------
-      - name: Push Docker image to Docker Hub
-        run: |
-          docker push $DOCKER_IMAGE
+          python -m mlflow run "MLProject (folder)" --env-manager=local

@@ -1,19 +1,7 @@
-name: weather-mlproject
+#triggered: MLProject
 
-conda_env: conda.yaml
+name: weather-ml-project
 
 entry_points:
   main:
-    parameters:
-      n_iter: {type: int, default: 30}
-      test_size: {type: float, default: 0.2}
-      random_state: {type: int, default: 42}
-      data_path: {type: str, default: "weather_preprocessing/seattle_weather_processed.csv"}
-      out_dir: {type: str, default: "artifacts"}
-    command: >
-      python modeling_tuning.py
-      --n-iter {n_iter}
-      --test-size {test_size}
-      --random-state {random_state}
-      --data_path {data_path}
-      --out_dir {out_dir}
+    command: "python modeling_tuning.py"
