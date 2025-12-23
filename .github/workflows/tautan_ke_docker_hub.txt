@@ -1,0 +1,1 @@
+https://hub.docker.com/repository/docker/irfanzr7/weather-mlflow-model/tags
