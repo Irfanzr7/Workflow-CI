@@ -1,4 +1,3 @@
-#triggered on push to main branch or manual dispatch
 name: CI MLflow Retraining
 
 "on":
@@ -17,17 +16,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Show repo structure (debug)
-        run: |
-          echo "=== ROOT ==="
-          ls -la
-          echo "=== MLProject (folder) ==="
-          ls -la "MLProject (folder)"
-          echo "=== print MLProject file ==="
-          cat "MLProject (folder)/MLProject" || true
-          echo "=== print conda.yaml ==="
-          cat "MLProject (folder)/conda.yaml" || true
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -39,6 +27,6 @@ jobs:
           pip install mlflow
 
       - name: Run MLflow Project
+        working-directory: "MLProject (folder)"
         run: |
-          mlflow run "MLProject (folder)" --env-manager=local
-        working-directory: .github/workflows
+          mlflow run . --env-manager=local
