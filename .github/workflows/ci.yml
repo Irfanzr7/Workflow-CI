@@ -37,7 +37,7 @@ jobs:
           pip install -r "MLProject (folder)/requirements.txt"
           pip install mlflow
 
-      # ✅ INI BAGIAN REVISI: harus pakai mlflow run (MLProject)
+      # INI BAGIAN REVISI: harus pakai mlflow run (MLProject)
       - name: Run mlflow project
         env:
           MLFLOW_TRACKING_URI: "file:./mlruns"
