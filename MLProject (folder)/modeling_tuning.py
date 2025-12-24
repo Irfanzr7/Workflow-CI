@@ -1,6 +1,5 @@
 import os
 import glob
-import json
 import shutil
 import logging
 import joblib
@@ -69,7 +68,7 @@ def find_processed_csv():
     raise FileNotFoundError("Processed dataset not found")
 
 
-def build_preprocessor(X):
+def build_preprocessor(X: pd.DataFrame):
     num_cols = X.select_dtypes(include=[np.number]).columns
     cat_cols = X.select_dtypes(exclude=[np.number]).columns
 
@@ -78,6 +77,7 @@ def build_preprocessor(X):
         ("scaler", StandardScaler())
     ])
 
+    # sklearn compatibility
     try:
         ohe = OneHotEncoder(handle_unknown="ignore", sparse_output=False)
     except TypeError:
@@ -95,138 +95,167 @@ def build_preprocessor(X):
 
 
 # --------------------------------------------------
+# MLFLOW HELPERS
+# --------------------------------------------------
+def ensure_active_run() -> bool:
+    """
+    Ensure there is an active MLflow run.
+
+    Returns:
+      already_active (bool): True if there was already an active run,
+      False if we had to start a new run.
+    """
+    active = mlflow.active_run()
+    if active is None:
+        mlflow.start_run()
+        return False
+    return True
+
+
+# --------------------------------------------------
 # MAIN
 # --------------------------------------------------
 def main(n_iter=30, test_size=0.2, random_state=42, data_path=None, out_dir="artifacts"):
     os.makedirs(out_dir, exist_ok=True)
 
+    # Optional DagsHub init (won't run in CI without token)
     try_init_dagshub()
 
-    if data_path:
-        # if path not found relative to current cwd, try relative to this script's folder
-        if not os.path.exists(data_path):
-            alt = os.path.join(os.path.dirname(__file__), data_path)
-            if os.path.exists(alt):
-                data_path = alt
-            else:
-                raise FileNotFoundError(f"Dataset not found: {data_path}")
-        logging.info("Using dataset: %s", data_path)
-    else:
-        data_path = find_processed_csv()
-        logging.info("Auto dataset: %s", data_path)
+    # Respect CI tracking URI if provided (so log goes to same ./mlruns)
+    if os.getenv("MLFLOW_TRACKING_URI"):
+        mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI"))
 
-    df = pd.read_csv(data_path)
-    if "weather" not in df.columns:
-        raise ValueError("Target column 'weather' not found")
+    already_active = ensure_active_run()
 
-    X = df.drop(columns=["weather"])
-    y = df["weather"]
+    try:
+        # Resolve dataset path
+        if data_path:
+            if not os.path.exists(data_path):
+                alt = os.path.join(os.path.dirname(__file__), data_path)
+                if os.path.exists(alt):
+                    data_path = alt
+                else:
+                    raise FileNotFoundError(f"Dataset not found: {data_path}")
+            logging.info("Using dataset: %s", data_path)
+        else:
+            data_path = find_processed_csv()
+            logging.info("Auto dataset: %s", data_path)
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=test_size, stratify=y, random_state=random_state
-    )
+        df = pd.read_csv(data_path)
+        if "weather" not in df.columns:
+            raise ValueError("Target column 'weather' not found")
 
-    preprocessor = build_preprocessor(X)
-    cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_state)
+        X = df.drop(columns=["weather"])
+        y = df["weather"]
 
-    models = {
-        "logreg": (
-            Pipeline([
-                ("prep", preprocessor),
-                ("model", LogisticRegression(max_iter=2000))
-            ]),
-            {
-                "model__C": uniform(0.01, 10),
-                "model__solver": ["lbfgs", "saga"],
-                "model__penalty": ["l2"]
-            }
-        ),
-        "rf": (
-            Pipeline([
-                ("prep", preprocessor),
-                ("model", RandomForestClassifier(random_state=random_state))
-            ]),
-            {
-                "model__n_estimators": randint(100, 400),
-                "model__max_depth": randint(3, 30),
-                "model__min_samples_split": randint(2, 10)
-            }
-        )
-    }
-
-    best_model = None
-    best_f1 = -1
-
-    # 🔑 LOG KE RUN YANG SUDAH DIBUAT OLEH `mlflow run`
-    mlflow.log_param("n_iter", n_iter)
-    mlflow.log_param("test_size", test_size)
-    mlflow.log_param("random_state", random_state)
-
-    for name, (pipe, params) in models.items():
-        logging.info("Training %s", name)
-
-        search = RandomizedSearchCV(
-            pipe,
-            params,
-            n_iter=n_iter,
-            scoring="f1_weighted",
-            cv=cv,
-            n_jobs=-1,
-            random_state=random_state,
-            verbose=1
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, stratify=y, random_state=random_state
         )
 
-        search.fit(X_train, y_train)
+        preprocessor = build_preprocessor(X)
+        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=random_state)
 
-        y_pred = search.predict(X_test)
-        acc = accuracy_score(y_test, y_pred)
-        f1 = f1_score(y_test, y_pred, average="weighted")
+        models = {
+            "logreg": (
+                Pipeline([
+                    ("prep", preprocessor),
+                    ("model", LogisticRegression(max_iter=2000))
+                ]),
+                {
+                    "model__C": uniform(0.01, 10),
+                    "model__solver": ["lbfgs", "saga"],
+                    "model__penalty": ["l2"]
+                }
+            ),
+            "rf": (
+                Pipeline([
+                    ("prep", preprocessor),
+                    ("model", RandomForestClassifier(random_state=random_state))
+                ]),
+                {
+                    "model__n_estimators": randint(100, 400),
+                    "model__max_depth": randint(3, 30),
+                    "model__min_samples_split": randint(2, 10)
+                }
+            )
+        }
 
-        mlflow.log_metric(f"{name}_accuracy", acc)
-        mlflow.log_metric(f"{name}_f1_weighted", f1)
+        # Log global params (safe: run is active)
+        mlflow.log_param("n_iter", n_iter)
+        mlflow.log_param("test_size", test_size)
+        mlflow.log_param("random_state", random_state)
 
-        report_path = os.path.join(out_dir, f"classification_report_{name}.txt")
-        with open(report_path, "w") as f:
-            f.write(classification_report(y_test, y_pred))
+        best_model = None
+        best_f1 = -1.0
 
-        model_path = os.path.join(out_dir, f"model_{name}.joblib")
-        joblib.dump(search.best_estimator_, model_path)
+        for name, (pipe, params) in models.items():
+            logging.info("Training %s", name)
 
-        mlflow.log_artifact(report_path)
-        mlflow.log_artifact(model_path)
+            search = RandomizedSearchCV(
+                pipe,
+                params,
+                n_iter=n_iter,
+                scoring="f1_weighted",
+                cv=cv,
+                n_jobs=-1,
+                random_state=random_state,
+                verbose=1
+            )
 
-        if f1 > best_f1:
-            best_f1 = f1
-            best_model = (name, search.best_estimator_)
+            search.fit(X_train, y_train)
 
-    # SAVE BEST MODEL FOR DOCKER
-    if best_model:
-        name, model = best_model
-        mlflow.log_param("best_model", name)
-        mlflow.log_metric("best_f1_weighted", best_f1)
+            y_pred = search.predict(X_test)
+            acc = accuracy_score(y_test, y_pred)
+            f1 = f1_score(y_test, y_pred, average="weighted")
 
-        best_model_dir = os.path.join(out_dir, "model")
-        if os.path.exists(best_model_dir):
-            shutil.rmtree(best_model_dir)
+            mlflow.log_metric(f"{name}_accuracy", acc)
+            mlflow.log_metric(f"{name}_f1_weighted", f1)
 
-        mlflow.sklearn.save_model(model, best_model_dir)
+            report_path = os.path.join(out_dir, f"classification_report_{name}.txt")
+            with open(report_path, "w", encoding="utf-8") as f:
+                f.write(classification_report(y_test, y_pred, zero_division=0))
 
-        if not os.path.exists(os.path.join(best_model_dir, "MLmodel")):
-            raise RuntimeError("MLmodel not created")
+            model_path = os.path.join(out_dir, f"model_{name}.joblib")
+            joblib.dump(search.best_estimator_, model_path)
 
-        logging.info("Best model saved to %s", best_model_dir)
+            mlflow.log_artifact(report_path)
+            mlflow.log_artifact(model_path)
+
+            if f1 > best_f1:
+                best_f1 = f1
+                best_model = (name, search.best_estimator_)
+
+        # Save best model for Docker
+        if best_model:
+            best_name, model = best_model
+            mlflow.log_param("best_model", best_name)
+            mlflow.log_metric("best_f1_weighted", best_f1)
+
+            best_model_dir = os.path.join(out_dir, "model")
+            if os.path.exists(best_model_dir):
+                shutil.rmtree(best_model_dir)
+
+            mlflow.sklearn.save_model(model, best_model_dir)
+
+            if not os.path.exists(os.path.join(best_model_dir, "MLmodel")):
+                raise RuntimeError("MLmodel not created")
+
+            logging.info("Best model saved to %s", best_model_dir)
+
+    finally:
+        # Only end run if we started it (avoid disturbing mlflow run wrapper)
+        if not already_active:
+            mlflow.end_run()
 
 
 # --------------------------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-
     parser.add_argument("--n-iter", dest="n_iter", type=int, default=30)
     parser.add_argument("--test-size", dest="test_size", type=float, default=0.2)
     parser.add_argument("--random-state", dest="random_state", type=int, default=42)
     parser.add_argument("--data_path", type=str, default=None)
     parser.add_argument("--out_dir", type=str, default="artifacts")
-
     args = parser.parse_args()
 
     try:
