@@ -10,11 +10,12 @@ jobs:
   train_and_deploy:
     runs-on: ubuntu-latest
 
-    steps:
-      - name: Set up job
-        run: echo "Starting CI job..."
+    # 🔑 WAJIB: tracking URI ABSOLUTE (FIX run not found)
+    env:
+      MLFLOW_TRACKING_URI: "file:${{ github.workspace }}/mlruns"
 
-      - name: Run actions/checkout@v3
+    steps:
+      - name: Checkout repository
         uses: actions/checkout@v3
 
       - name: Set up Python 3.10
@@ -22,102 +23,58 @@ jobs:
         with:
           python-version: "3.10"
 
-      - name: Check Env
+      - name: Check environment
         run: |
           python --version
           pip --version
+          echo "Workspace:"
+          pwd
           ls -la
-          ls -la ".github/workflows" || true
-          ls -la "MLProject (folder)" || true
+          echo "MLProject folder:"
+          ls -la "MLProject (folder)"
 
-      - name: Install dependencies
+      # ⚠️ OPTIONAL
+      # Kalau requirements sudah didefinisikan di conda.yaml,
+      # step ini SEBENARNYA BOLEH DIHAPUS
+      - name: Install base dependencies
         run: |
           python -m pip install --upgrade pip
-          # install project deps (sesuaikan jika requirements ada di lokasi lain)
-          pip install -r "MLProject (folder)/requirements.txt"
           pip install mlflow
 
-      # INI BAGIAN REVISI: harus pakai mlflow run (MLProject)
-      - name: Run mlflow project
-        env:
-          MLFLOW_TRACKING_URI: "file:./mlruns"
+      # ✅ SESUAI REVISI DICODING
+      # ❌ TIDAK boleh python modeling_tuning.py
+      # ✅ WAJIB mlflow run
+      - name: Run MLflow Project
         run: |
           python -m mlflow run "MLProject (folder)" --env-manager=local
 
+      # (OPSIONAL) ambil run_id terakhir (kalau mau dipakai lanjut)
       - name: Get latest MLflow run_id
-        id: get_run_id
-        env:
-          MLFLOW_TRACKING_URI: "file:./mlruns"
+        id: get_run
         run: |
           python - <<'PY'
-          import os
           import mlflow
           from mlflow.tracking import MlflowClient
 
-          tracking_uri = os.environ.get("MLFLOW_TRACKING_URI")
-          mlflow.set_tracking_uri(tracking_uri)
           client = MlflowClient()
-
-          # Ambil experiment Default (id 0) atau cari by name jika kamu pakai set_experiment
           exp = client.get_experiment_by_name("Default")
-          if exp is None:
-            exp_id = "0"
-          else:
-            exp_id = exp.experiment_id
+          exp_id = exp.experiment_id if exp else "0"
 
-          runs = client.search_runs([exp_id], order_by=["attributes.start_time DESC"], max_results=1)
+          runs = client.search_runs(
+              [exp_id],
+              order_by=["attributes.start_time DESC"],
+              max_results=1
+          )
+
           if not runs:
-            raise SystemExit("No MLflow runs found. Pastikan mlflow run menghasilkan run.")
-          run_id = runs[0].info.run_id
-          print("LATEST_RUN_ID=" + run_id)
+              raise SystemExit("No MLflow runs found")
 
-          # export ke GITHUB_OUTPUT
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-            f.write(f"run_id={run_id}\n")
+          run_id = runs[0].info.run_id
+          print("LATEST_RUN_ID=", run_id)
+
+          with open("${GITHUB_OUTPUT}", "a") as f:
+              f.write(f"run_id={run_id}\n")
           PY
 
-      # (Opsional) install dependency tambahan untuk step lain
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests
-
-      # ==========================
-      # OPTIONAL: Upload to Google Drive
-      # ==========================
-      # Aktifkan ini kalau kamu memang butuh.
-      # Kamu harus set secrets:
-      # - GDRIVE_SA_JSON (isi json service account)
-      # - GDRIVE_FOLDER_ID (id folder drive)
-      - name: Upload to Google Drive (optional)
-        if: ${{ false }}
-        env:
-          GDRIVE_SA_JSON: ${{ secrets.GDRIVE_SA_JSON }}
-          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
-        run: |
-          echo "Skipping upload (optional step disabled)."
-
-      # ==========================
-      # DOCKER BUILD & PUSH
-      # ==========================
-      # Kamu harus set secrets:
-      # - DOCKERHUB_USERNAME
-      # - DOCKERHUB_TOKEN
-      - name: Build Docker Model
-        run: |
-          docker build -t weather-mlflow-model:latest .
-
-      - name: Log in to Docker Hub
-        run: |
-          echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
-
-      - name: Tag Docker Image
-        run: |
-          docker tag weather-mlflow-model:latest ${{ secrets.DOCKERHUB_USERNAME }}/weather-mlflow-model:latest
-
-      - name: Push Docker Image
-        run: |
-          docker push ${{ secrets.DOCKERHUB_USERNAME }}/weather-mlflow-model:latest
-
-      - name: Post Log in to Docker Hub
-        run: echo "Docker push done."
+      - name: CI finished
+        run: echo "CI MLflow Project finished successfully ✅"
